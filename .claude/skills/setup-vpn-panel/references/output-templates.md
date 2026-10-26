@@ -17,16 +17,17 @@ Inventory:
 
 ## VPN-панель 3X-UI
 
-- **URL**: https://$DOMAIN:$PANEL_PORT/$WEB_BASE_PATH/
+- **Адрес**: https://$DOMAIN:$PANEL_PORT/ (при доступе через nginx на 443 — https://$DOMAIN/); путь (webBasePath) здесь НЕ пишем
 - **Версия**: $VERSION
-- **Логин**: см. менеджер паролей, запись `3xui-panel-$SERVER_ALIAS`
+- **Логин и webBasePath**: только в менеджере паролей, запись `3xui-panel-$SERVER_ALIAS` (inventory уходит на GitHub, путь — секрет)
 - **Расположение**: $LOCATION (ru-server / foreign-server)
 - **TLS**: Let's Encrypt через $TLS_METHOD, путь `/root/cert/$DOMAIN/`
 - **Установлено**: YYYY-MM-DD
 - **Inbound/outbound**: не настроены (см. `/configure-vpn-routing`)
 ```
 
-`infra-config.json` обновляется:
+`infra-config.json` обновляется скриптом `scripts/07-record-config.sh` (не руками);
+итоговый вид блока:
 
 ```jsonc
 "vpn": {

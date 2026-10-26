@@ -63,7 +63,7 @@ allowed-tools: Bash, Read, Edit, Write
 | `SERVER_ALIAS` | да | — | Короткое имя сервера для inventory и менеджера паролей (например, `vpn-de` или `prod`) |
 | `DOMAIN` | да | — | Домен с действующей A-записью на IP сервера. Для HTTPS-сертификата. |
 | `LOCATION` | нет | `ask` | `ru-server` / `foreign-server` / `ask`. Влияет на дальнейшую настройку (важно: только при `foreign-server` готовится 443/tcp под VLESS+Reality). |
-| `VERSION` | нет | `v3.0.2` | Версия 3X-UI. Фиксированная для повторяемости. См. https://github.com/MHSanaei/3x-ui/releases |
+| `VERSION` | нет | `v3.10.2` | Версия 3X-UI. Фиксированная для повторяемости. Перед сменой — сверить релиз и ход установщика: https://github.com/MHSanaei/3x-ui/releases |
 | `PANEL_PORT` | нет | случайный из 20000-60000 | Порт панели (рекомендуется нестандартный) |
 | `ADMIN_LOGIN` | нет | случайный 8 симв. | Логин администратора. **НЕ `admin`** — это первое, что брутят. |
 | `WEB_BASE_PATH` | нет | случайный 10 симв. | webBasePath (`/abc123xyz0/`) — защита от сканеров |
@@ -227,16 +227,24 @@ NEVER пропускать эту развязку. NEVER отвечать на 
 
 Скрипт `scripts/02-install-3x-ui.sh`:
 
-1. Запускает официальный `install.sh` с фиксацией `VERSION`.
-2. Отвечает 'n' на интерактивный вопрос про port settings.
-3. Сразу после установки через `x-ui setting` меняет: `-username
-   $ADMIN_LOGIN`, `-password $ADMIN_PASSWORD`, `-port $PANEL_PORT`,
-   `-webBasePath /$WEB_BASE_PATH/`.
-4. Рестартует `x-ui` для применения изменений.
-5. Проверяет, что `systemctl is-active x-ui` = active.
+1. Скачивает официальный `install.sh` по тегу `VERSION` в файл, печатает его sha256 и
+   запускает в неинтерактивном режиме (`XUI_NONINTERACTIVE=1`, без TLS —
+   `XUI_SSL_MODE=none`, SQLite, без автонастройки fail2ban — `XUI_ENABLE_FAIL2BAN=false`).
+2. Креды (`$ADMIN_LOGIN`, `$ADMIN_PASSWORD`, `$PANEL_PORT`, `$WEB_BASE_PATH`) передаёт
+   установщику **через окружение**: секреты идут на сервер по stdin ssh, читаются там
+   командой `read` и наследуются установщиком. **В аргументы команды пароль не попадает**
+   (раньше шло `x-ui setting -password '<пароль>'` — пароль виден в `ps` и
+   `/proc/<pid>/cmdline` и подставлялся в текст скрипта, уходящего по ssh).
+3. Фильтрует вывод установщика (логин, пароль, API-токен, путь он печатает открытым
+   текстом) — в журнал сессии они не попадают.
+4. Проверяет, что `systemctl is-active x-ui` = active и что `hasDefaultCredential` ≠ true.
 
-**Verify:** `ssh $SSH_TARGET '/usr/local/x-ui/x-ui setting -show true'` —
-показывает новые значения port, username, webBasePath.
+> 🔒 Установщик оставляет файл `/etc/x-ui/install-result.env` (0600, root) с теми же
+> секретами. Он удаляется после того, как оператор подтвердит, что запись в менеджере
+> паролей сохранена (удаление — только с его отдельного «да»).
+
+**Verify:** `ssh $SSH_TARGET 'sudo /usr/local/x-ui/x-ui setting -show true'` — порт и
+webBasePath (логин и пароль в вывод не брать).
 
 ## Шаг 4: Выпуск TLS-сертификата
 
@@ -320,13 +328,23 @@ macOS, аналогично для других).
 
 ## Шаг 7: Обновление inventory и конфига
 
-В `inventory/hosts/$SERVER_ALIAS/services.md` — раздел «VPN-панель 3X-UI»: URL, версия,
-где лежат креды, расположение сервера, метод и путь TLS, дата установки и явная строка
-«inbound/outbound не настроены». В `infra-config.json` — блок `vpn` с `enabled`,
-`panel_url`, `panel_web_base_path`, `server_role`, `server_proxy_enabled=false`,
-`upstream_kind="none"`, `default_reality_dest`.
+В `inventory/hosts/$SERVER_ALIAS/services.md` — раздел «VPN-панель 3X-UI»: адрес панели
+**без webBasePath**, версия, где лежат креды, расположение сервера, метод и путь TLS, дата
+установки и явная строка «inbound/outbound не настроены».
 
-Готовые образцы обоих блоков — `references/output-templates.md`.
+> 🔒 **webBasePath в inventory не пишем.** Путь — второй уровень секрета панели, а
+> `inventory/` версионируется и уходит на GitHub. В тексте inventory — только «путь в
+> менеджере паролей, запись `3xui-panel-$SERVER_ALIAS`». Логин — тоже только ссылкой.
+
+Блок `vpn` в `infra-config.json` (`enabled`, `panel_url`, `panel_web_base_path`,
+`server_role`, `server_proxy_enabled=false`, `upstream_kind="none"`, `default_reality_dest`)
+пишет **скрипт `scripts/07-record-config.sh`**, а не агент руками (C.9): бэкап файла,
+правка только полей `vpn.*`, проверка результата, значение пути в вывод не печатается.
+Здесь путь хранится осознанно: `infra-config.json` в `.gitignore` папки инфры и нужен
+VPN-скиллам для вызовов API. `panel_url` — без пути (при доступе через nginx на 443 —
+`https://$DOMAIN` без порта).
+
+Готовые образцы — `references/output-templates.md`.
 
 > 🔒 **`server_role` — источник правды для выбора протокола.** Записывается здесь по
 > выбранному `$LOCATION` (Шаг 1). `/configure-vpn-routing` читает это поле и выводит
@@ -374,7 +392,7 @@ ssh $SSH_TARGET "rm -rf /root/cert/$DOMAIN; /root/.acme.sh/acme.sh --revoke -d $
 | `references/panel-hardening.md` | **Чек-лист безопасности панели** — после установки |
 | `references/output-templates.md` | **Образцы записей и отчёта**: блок для `services.md`, блок `vpn` для `infra-config.json`, полный текст финального отчёта. Открывать на Шагах 7 и 8 |
 | `references/pitfalls.md` | **Когда шаг не сработал**: шесть граблей (креды по умолчанию, сертификат на IP, зависший интерактив установщика, занятый порт 80, несуществующий флаг `-webCertFile`, форк вместо эталона) и пять граничных случаев (VPS без первичной настройки, NAT, несколько доменов на IP, включённый Cloudflare-proxy, исчерпанный rate limit) |
-| `scripts/01-preflight.sh` … `06-validate-reality-dest.sh` | шаги процедуры по порядку: pre-check, установка, TLS, UFW, запись секретов, валидация Reality-dest |
+| `scripts/01-preflight.sh` … `07-record-config.sh` | шаги процедуры по порядку: pre-check, установка, TLS, UFW, запись секретов, валидация Reality-dest, запись блока `vpn` в `infra-config.json` |
 
 Внешние источники: `knowledge/networking/_reference/3x-ui-panel.md` (архитектура панели и
 подводные камни), `3x-ui-api.md` (REST API — понадобится следующим скиллам),
